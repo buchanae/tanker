@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"io"
-  "os"
+	"os"
+	"syscall"
 	"time"
 )
 
@@ -82,4 +83,33 @@ func FileSize(path string) int64 {
 		return 0
 	}
 	return st.Size()
+}
+
+// exists returns whether the given file or directory exists or not
+func exists(p string) (bool, error) {
+	_, err := os.Stat(p)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return true, err
+}
+
+// EnsureDir ensures a directory exists.
+func EnsureDir(p string) error {
+	e, err := exists(p)
+	if err != nil {
+		return err
+	}
+	if !e {
+		// TODO configurable mode?
+		_ = syscall.Umask(0000)
+		err := os.MkdirAll(p, 0775)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

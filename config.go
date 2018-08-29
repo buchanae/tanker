@@ -1,11 +1,31 @@
 package main
 
 import (
-  "os"
+	"os"
 )
 
-// Config configures the OpenStack Swift object storage backend.
+func DefaultConfig() Config {
+	return Config{
+		BaseURL: "swift://buchanan/tanker/",
+		DataDir: ".tanker/data",
+		Logging: LoggingConfig{
+			Path: ".tanker/logs",
+		},
+	}
+}
+
 type Config struct {
+	BaseURL string
+	DataDir string
+	Logging LoggingConfig
+}
+
+type LoggingConfig struct {
+	Path string
+}
+
+// SwiftConfig configures the OpenStack Swift object storage backend.
+type SwiftConfig struct {
 	Disabled   bool
 	UserName   string
 	Password   string
@@ -23,7 +43,7 @@ type Config struct {
 }
 
 // Valid validates the Config configuration.
-func (s Config) Valid() bool {
+func (s SwiftConfig) Valid() bool {
 	user := s.UserName != "" || os.Getenv("OS_USERNAME") != ""
 	password := s.Password != "" || os.Getenv("OS_PASSWORD") != ""
 	authURL := s.AuthURL != "" || os.Getenv("OS_AUTH_URL") != ""

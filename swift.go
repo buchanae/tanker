@@ -23,7 +23,7 @@ type Swift struct {
 
 // NewSwift creates an Swift client instance, give an endpoint URL
 // and a set of authentication credentials.
-func NewSwift(conf Config) (*Swift, error) {
+func NewSwift(conf SwiftConfig) (*Swift, error) {
 
 	// Create a connection
 	conn := &swift.Connection{
@@ -55,7 +55,7 @@ func NewSwift(conf Config) (*Swift, error) {
 }
 
 // NewSwiftRetrier returns a Swift storage client that retries operations on error.
-func NewSwiftRetrier(conf Config) (*StorageRetrier, error) {
+func NewSwiftRetrier(conf SwiftConfig) (*StorageRetrier, error) {
 	b, err := NewSwift(conf)
 	if err != nil {
 		return nil, err

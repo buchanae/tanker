@@ -1,177 +1,124 @@
 package main
 
 import (
-  "bufio"
-  "context"
-  "log"
-  "os"
-  "encoding/json"
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 )
 
-type message struct {
-  Event string `json:"event"`
-}
-
-type initMessage struct {
-  Operation string `json:"operation"`
-  Remote string `json:"remote"`
-  Concurrent bool `json:"concurrent"`
-  ConcurrentTransfers int `json:"concurrenttransfers"`
-}
-
-type uploadMessage struct {
-  Oid string `json:"oid"`
-  Size int `json:"size"`
-  Path string `json:"path"`
-}
-
-type downloadMessage struct {
-  Oid string `json:"oid"`
-  Size int `json:"size"`
-}
-
-type progressMessage struct {
-  Event string `json:"event"`
-  Oid string `json:"oid"`
-  BytesSoFar int `json:"bytesSoFar"`
-  BytesSinceLast int `json:"bytesSinceLast"`
-}
-
-type completeMessage struct {
-  Event string `json:"event"`
-  Oid string `json:"oid"`
-  Path string `json:"path"`
-}
-
-type errorMessage struct {
-  Event string `json:"event"`
-  Oid string `json:"oid"`
-  Error struct {
-    Code int `json:"code"`
-    Message string `json:"message"`
-  } `json:"error"`
-}
+// All this is based on git-lfs custom transfer agents.
+// In particular, this is a "standalone transfer agent"
+// https://github.com/git-lfs/git-lfs/blob/master/docs/custom-transfers.md
 
 func main() {
-  // TODO concurrent, multiprocess log
-  logfh, err := os.Create("tanker.log")
-  if err != nil {
-    log.Fatal(err)
-  }
-  defer logfh.Close()
-  log.SetOutput(logfh)
+	conf := DefaultConfig()
 
-  scanner := bufio.NewScanner(os.Stdin)
-  enc := json.NewEncoder(os.Stdout)
+	// TODO concurrent, multiprocess log
+	logfh, err := os.Create(conf.Logging.Path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logfh.Close()
+	log.SetOutput(logfh)
+	defer log.Println("tanker done")
 
-  swift, err := NewSwiftRetrier(Config{})
-  if err != nil {
-    log.Fatal(err)
-  }
+	err = EnsureDir(conf.DataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-  defer log.Println("tanker done")
+	store, err := NewSwiftRetrier(SwiftConfig{})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-  for scanner.Scan() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-    var msg message
-    err := json.Unmarshal(scanner.Bytes(), &msg)
-    if err != nil {
-      log.Fatal(err)
-    }
+	comms := DefaultComms()
+	for {
+		msg, err := comms.Input()
+		if err != nil {
+			log.Fatal(err)
+		}
 
-    switch msg.Event {
-    case "init":
-      var msg initMessage
-      err := json.Unmarshal(scanner.Bytes(), &msg)
-      if err != nil {
-        log.Fatal(err)
-      }
+		err = handle(ctx, msg, comms, store, conf)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-      log.Println("init", msg)
+		if _, ok := msg.(*TerminateMessage); ok {
+			break
+		}
+	}
+}
 
-      var empty struct{}
-      enc.Encode(empty)
+// handle handles a single input message from git-lfs (init, upload, download, etc)
+func handle(ctx context.Context, m Message, comms *Comms, store Storage, conf Config) error {
+	switch msg := m.(type) {
+	case *InitMessage:
+		comms.Initialized()
+		return nil
 
-    case "upload":
-      var msg uploadMessage
-      err := json.Unmarshal(scanner.Bytes(), &msg)
-      if err != nil {
-        log.Fatal(err)
-      }
+	case *UploadMessage:
+		url, err := store.Join(conf.BaseURL, msg.Oid)
+		if err != nil {
+			comms.SendError(msg.Oid, err)
+			// A failed upload should not fail the whole process,
+			// so we return nil. The error has been communicated
+			// to git-lfs above.
+			return nil
+		}
 
-      log.Println(msg)
-      ctx := context.Background()
-      url, err := swift.Join("swift://buchanan/tanker/", msg.Oid)
-      if err != nil {
-        log.Fatal(err)
-      }
+		_, err = store.Put(ctx, url, msg.Path)
+		if err != nil {
+			comms.SendError(msg.Oid, err)
+			// A failed upload should not fail the whole process,
+			// so we return nil. The error has been communicated
+			// to git-lfs above.
+			return nil
+		}
 
-      obj, err := swift.Put(ctx, url, msg.Path)
-      if err != nil {
-        log.Fatal(err)
-      }
+		return comms.SendComplete(msg.Oid, "")
 
-      log.Println(obj)
+	case *DownloadMessage:
 
-      err = enc.Encode(progressMessage{
-        Event: "progress",
-        Oid: msg.Oid,
-        BytesSoFar: msg.Size,
-        BytesSinceLast: msg.Size,
-      })
-      if err != nil {
-        log.Fatal(err)
-      }
+		// determine path to download file to.
+		// this usually goes into ".tanker/data".
+		// git-lfs will handle moving the file from here.
+		path := filepath.Join(conf.DataDir, msg.Oid)
+		abspath, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("determining download path: %s", err)
+		}
 
-      err = enc.Encode(completeMessage{
-        Event: "complete",
-        Oid: msg.Oid,
-      })
-      if err != nil {
-        log.Fatal(err)
-      }
+		url, err := store.Join(conf.BaseURL, msg.Oid)
+		if err != nil {
+			comms.SendError(msg.Oid, err)
+			// A failed download should not fail the whole process,
+			// so we return nil. The error has been communicated
+			// to git-lfs above.
+			return nil
+		}
 
-    case "download":
-      var msg downloadMessage
-      err := json.Unmarshal(scanner.Bytes(), &msg)
-      if err != nil {
-        log.Fatal(err)
-      }
+		_, err = store.Get(ctx, url, abspath)
+		if err != nil {
+			// TODO probably need to ensure files are cleanup up on failed downloads.
+			comms.SendError(msg.Oid, err)
 
-      log.Println(msg)
+			// A failed download should not fail the whole process,
+			// so we return nil. The error has been communicated
+			// to git-lfs above.
+			return nil
+		}
 
-      ctx := context.Background()
-      url, err := swift.Join("swift://buchanan/tanker/", msg.Oid)
-      if err != nil {
-        log.Fatal(err)
-      }
+		return comms.SendComplete(msg.Oid, abspath)
 
-      obj, err := swift.Get(ctx, url, "tanker.bin." + msg.Oid)
-      if err != nil {
-        log.Fatal(err)
-      }
-
-      log.Println(obj)
-
-      err = enc.Encode(completeMessage{
-        Event: "complete",
-        Oid: msg.Oid,
-        Path: "foo-dne",
-      })
-      if err != nil {
-        log.Fatal(err)
-      }
-
-    case "terminate":
-      return
-
-    default:
-      log.Println("unknown event", msg.Event)
-    }
-  }
-
-  err = scanner.Err()
-  if err != nil {
-    log.Fatal(err)
-  }
+	case *TerminateMessage:
+		return nil
+	default:
+		return fmt.Errorf("unknown message type %#v", msg)
+	}
 }
