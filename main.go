@@ -2,6 +2,7 @@ package main
 
 import (
   "bufio"
+  "context"
   "log"
   "os"
   "encoding/json"
@@ -63,6 +64,11 @@ func main() {
   scanner := bufio.NewScanner(os.Stdin)
   enc := json.NewEncoder(os.Stdout)
 
+  swift, err := NewSwiftRetrier(Config{})
+  if err != nil {
+    log.Fatal(err)
+  }
+
   defer log.Println("tanker done")
 
   for scanner.Scan() {
@@ -81,7 +87,7 @@ func main() {
         log.Fatal(err)
       }
 
-      log.Println(msg)
+      log.Println("init", msg)
 
       var empty struct{}
       enc.Encode(empty)
@@ -94,6 +100,18 @@ func main() {
       }
 
       log.Println(msg)
+      ctx := context.Background()
+      url, err := swift.Join("swift://buchanan/tanker/", msg.Oid)
+      if err != nil {
+        log.Fatal(err)
+      }
+
+      obj, err := swift.Put(ctx, url, msg.Path)
+      if err != nil {
+        log.Fatal(err)
+      }
+
+      log.Println(obj)
 
       err = enc.Encode(progressMessage{
         Event: "progress",
@@ -121,6 +139,19 @@ func main() {
       }
 
       log.Println(msg)
+
+      ctx := context.Background()
+      url, err := swift.Join("swift://buchanan/tanker/", msg.Oid)
+      if err != nil {
+        log.Fatal(err)
+      }
+
+      obj, err := swift.Get(ctx, url, "tanker.bin." + msg.Oid)
+      if err != nil {
+        log.Fatal(err)
+      }
+
+      log.Println(obj)
 
       err = enc.Encode(completeMessage{
         Event: "complete",
