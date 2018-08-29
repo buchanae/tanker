@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+  "log"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,10 +39,9 @@ func (c *Comms) Input() (Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scanning for input message: %s", err)
 	}
-
-	if !more {
+  if err == io.EOF || !more {
 		return &TerminateMessage{}, nil
-	}
+  }
 
 	// Determine the type of the message by looking for the "event" field.
 	var msg genericMessage
@@ -94,6 +94,7 @@ func (c *Comms) Send(msg Message) error {
 }
 
 func (c *Comms) SendError(oid string, err error) {
+  log.Println("Sending error", oid, err)
 	// We're ignoring the error from Send();
 	// if the send fails, there's not a lot we can do.
 	c.Send(&ErrorMessage{

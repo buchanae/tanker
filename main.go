@@ -6,6 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+
+  "github.com/buchanae/tanker/storage"
 )
 
 // All this is based on git-lfs custom transfer agents.
@@ -14,6 +17,11 @@ import (
 
 func main() {
 	conf := DefaultConfig()
+
+  err := storage.EnsurePath(conf.Logging.Path)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// TODO concurrent, multiprocess log
 	logfh, err := os.Create(conf.Logging.Path)
@@ -24,12 +32,13 @@ func main() {
 	log.SetOutput(logfh)
 	defer log.Println("tanker done")
 
-	err = EnsureDir(conf.DataDir)
+  // TODO probably want the git repo root, not the current directory
+	err = storage.EnsureDir(conf.DataDir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	store, err := NewSwiftRetrier(SwiftConfig{})
+  store, err := storage.NewStorage(conf.BaseURL, conf.Storage)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -41,11 +50,13 @@ func main() {
 	for {
 		msg, err := comms.Input()
 		if err != nil {
+      log.Println("input err")
 			log.Fatal(err)
 		}
 
 		err = handle(ctx, msg, comms, store, conf)
 		if err != nil {
+      log.Println("handle err")
 			log.Fatal(err)
 		}
 
@@ -56,7 +67,12 @@ func main() {
 }
 
 // handle handles a single input message from git-lfs (init, upload, download, etc)
-func handle(ctx context.Context, m Message, comms *Comms, store Storage, conf Config) error {
+func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage, conf Config) (err error) {
+
+  defer handlePanic(func(e error) {
+    err = e
+  })
+
 	switch msg := m.(type) {
 	case *InitMessage:
 		comms.Initialized()
@@ -72,8 +88,18 @@ func handle(ctx context.Context, m Message, comms *Comms, store Storage, conf Co
 			return nil
 		}
 
-		_, err = store.Put(ctx, url, msg.Path)
+    log.Println("Uploading", msg.Path, url)
+
+    src, err := os.Open(msg.Path)
+    if err != nil {
+      return fmt.Errorf("opening source file %q: %s", err)
+    }
+    defer src.Close()
+
+    log.Println("Put")
+		_, err = store.Put(ctx, url, src)
 		if err != nil {
+      log.Println("Upload failed", err)
 			comms.SendError(msg.Oid, err)
 			// A failed upload should not fail the whole process,
 			// so we return nil. The error has been communicated
@@ -103,10 +129,27 @@ func handle(ctx context.Context, m Message, comms *Comms, store Storage, conf Co
 			return nil
 		}
 
-		_, err = store.Get(ctx, url, abspath)
+    dest, err := os.Create(abspath)
+    if err != nil {
+      return fmt.Errorf("opening dest path %q: %s", abspath, dest)
+    }
+
+		_, err = store.Get(ctx, url, dest)
+    closeErr := dest.Close()
+
 		if err != nil {
 			// TODO probably need to ensure files are cleanup up on failed downloads.
 			comms.SendError(msg.Oid, err)
+
+			// A failed download should not fail the whole process,
+			// so we return nil. The error has been communicated
+			// to git-lfs above.
+			return nil
+		}
+
+		if closeErr != nil {
+			// TODO probably need to ensure files are cleanup up on failed downloads.
+			comms.SendError(msg.Oid, closeErr)
 
 			// A failed download should not fail the whole process,
 			// so we return nil. The error has been communicated
@@ -120,5 +163,17 @@ func handle(ctx context.Context, m Message, comms *Comms, store Storage, conf Co
 		return nil
 	default:
 		return fmt.Errorf("unknown message type %#v", msg)
+	}
+}
+
+// recover from panic and call "cb" with an error value.
+func handlePanic(cb func(error)) {
+	if r := recover(); r != nil {
+		if e, ok := r.(error); ok {
+			b := debug.Stack()
+			cb(fmt.Errorf("panic: %s\n%s", e, string(b)))
+		} else {
+			cb(fmt.Errorf("Unknown worker panic: %+v", r))
+		}
 	}
 }

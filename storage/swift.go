@@ -1,19 +1,50 @@
-package main
+package storage
 
 import (
 	"context"
 	"fmt"
+  "log"
 	"io"
-	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/alecthomas/units"
 	"github.com/ncw/swift"
 )
 
-const swiftProtocol = "swift://"
+const SwiftProtocol = "swift://"
+
+// SwiftConfig configures the OpenStack Swift object storage backend.
+type SwiftConfig struct {
+	Disabled   bool
+	UserName   string
+	Password   string
+	AuthURL    string
+	TenantName string
+	TenantID   string
+	RegionName string
+	// Size of chunks to use for large object creation.
+	// Defaults to 500 MB if not set or set below 10 MB.
+	// The max number of chunks for a single object is 1000.
+	ChunkSizeBytes int64
+	// The maximum number of times to retry on error.
+	// Defaults to 3.
+	MaxRetries int
+}
+
+// Valid validates the SwiftConfig configuration.
+func (s SwiftConfig) Valid() bool {
+	user := s.UserName != "" || os.Getenv("OS_USERNAME") != ""
+	password := s.Password != "" || os.Getenv("OS_PASSWORD") != ""
+	authURL := s.AuthURL != "" || os.Getenv("OS_AUTH_URL") != ""
+	tenantName := s.TenantName != "" || os.Getenv("OS_TENANT_NAME") != "" || os.Getenv("OS_PROJECT_NAME") != ""
+	tenantID := s.TenantID != "" || os.Getenv("OS_TENANT_ID") != "" || os.Getenv("OS_PROJECT_ID") != ""
+	region := s.RegionName != "" || os.Getenv("OS_REGION_NAME") != ""
+
+	valid := user && password && authURL && tenantName && tenantID && region
+
+	return !s.Disabled && valid
+}
 
 // Swift provides access to an sw object store.
 type Swift struct {
@@ -42,6 +73,11 @@ func NewSwift(conf SwiftConfig) (*Swift, error) {
 		return nil, err
 	}
 
+  err = conn.Authenticate()
+	if err != nil {
+		return nil, err
+	}
+
 	var chunkSize int64
 	if conf.ChunkSizeBytes < int64(100*units.MB) {
 		chunkSize = int64(500 * units.MB)
@@ -52,44 +88,6 @@ func NewSwift(conf SwiftConfig) (*Swift, error) {
 	}
 
 	return &Swift{conn, chunkSize}, nil
-}
-
-// NewSwiftRetrier returns a Swift storage client that retries operations on error.
-func NewSwiftRetrier(conf SwiftConfig) (*StorageRetrier, error) {
-	b, err := NewSwift(conf)
-	if err != nil {
-		return nil, err
-	}
-	return &StorageRetrier{
-		Backend: b,
-		Retrier: &Retrier{
-			MaxTries:            conf.MaxRetries,
-			InitialInterval:     500 * time.Millisecond,
-			MaxInterval:         5 * time.Minute,
-			Multiplier:          2.0,
-			RandomizationFactor: 0.5,
-			MaxElapsedTime:      0,
-			ShouldRetry:         shouldRetry,
-		},
-	}, nil
-}
-
-func shouldRetry(err error) bool {
-	serr, ok := err.(*swiftError)
-	if !ok {
-		return false
-	}
-	err = serr.err
-
-	// Retry on errors that swift names specifically.
-	if err == swift.ObjectCorrupted || err == swift.TimeoutError {
-		return true
-	}
-	// Retry on service unavailable.
-	if se, ok := err.(*swift.Error); ok {
-		return se.StatusCode == http.StatusServiceUnavailable
-	}
-	return false
 }
 
 // Stat returns metadata about the given url, such as checksum.
@@ -129,7 +127,7 @@ func (sw *Swift) List(ctx context.Context, url string) ([]*Object, error) {
 	var objects []*Object
 	for _, obj := range objs {
 		objects = append(objects, &Object{
-			URL:          swiftProtocol + u.bucket + "/" + obj.Name,
+			URL:          SwiftProtocol + u.bucket + "/" + obj.Name,
 			Name:         obj.Name,
 			Size:         obj.Bytes,
 			LastModified: obj.LastModified,
@@ -139,14 +137,13 @@ func (sw *Swift) List(ctx context.Context, url string) ([]*Object, error) {
 	return objects, nil
 }
 
-// Get copies an object from storage to the host path.
-func (sw *Swift) Get(ctx context.Context, url, path string) (*Object, error) {
+// Get copies an object from storage to the host.
+func (sw *Swift) Get(ctx context.Context, url string, dest io.Writer) (*Object, error) {
 	u, err := sw.parse(url)
 	if err != nil {
 		return nil, err
 	}
 
-	var checkHash = true
 	var headers swift.Headers
 
 	obj, err := sw.Stat(ctx, url)
@@ -154,78 +151,47 @@ func (sw *Swift) Get(ctx context.Context, url, path string) (*Object, error) {
 		return nil, err
 	}
 
-	f, _, err := sw.conn.ObjectOpen(u.bucket, u.path, checkHash, headers)
+	f, _, err := sw.conn.ObjectOpen(u.bucket, u.path, true, headers)
 	if err != nil {
 		return nil, &swiftError{"initiating download", url, err}
 	}
 	defer f.Close()
 
-	dest, err := os.Create(path)
-	if err != nil {
-		return nil, &swiftError{"creating file", url, err}
-	}
-
-	_, copyErr := io.Copy(dest, Reader(ctx, f))
-	closeErr := dest.Close()
-
+	_, copyErr := io.Copy(dest, ContextReader(ctx, f))
 	if copyErr != nil {
 		return nil, &swiftError{"copying file", url, copyErr}
-	}
-	if closeErr != nil {
-		return nil, &swiftError{"closing file", url, closeErr}
 	}
 
 	return obj, nil
 }
 
-// Put copies an object (file) from the host path to storage.
-func (sw *Swift) Put(ctx context.Context, url, path string) (*Object, error) {
+// Put copies an object (file) from the host to storage.
+func (sw *Swift) Put(ctx context.Context, url string, src io.Reader) (*Object, error) {
 
 	u, err := sw.parse(url)
 	if err != nil {
 		return nil, err
 	}
 
-	reader, err := os.Open(path)
-	if err != nil {
-		return nil, &swiftError{"opening host file", url, err}
-	}
-	defer reader.Close()
-
-	var writer io.WriteCloser
-	var checkHash = true
-	var hash string
-	var contentType string
-	var headers swift.Headers
-
-	fSize := FileSize(path)
-	if fSize < int64(5*units.GB) {
-		writer, err = sw.conn.ObjectCreate(u.bucket, u.path, checkHash, hash, contentType, headers)
-	} else {
-		writer, err = sw.conn.StaticLargeObjectCreateFile(&swift.LargeObjectOpts{
-			Container:  u.bucket,
-			ObjectName: u.path,
-			CheckHash:  checkHash,
-			Hash:       hash,
-			Headers:    headers,
-			ChunkSize:  sw.chunkSize,
-		})
-	}
-
+  writer, err := sw.conn.StaticLargeObjectCreate(&swift.LargeObjectOpts{
+    Container:  u.bucket,
+    ObjectName: u.path,
+    //CheckHash:  true,
+    //Hash:       hash,
+    ChunkSize:  sw.chunkSize,
+  })
+  log.Println("Create", err)
 	if err != nil {
 		return nil, &swiftError{"creating object", url, err}
 	}
 
-	_, copyErr := io.Copy(writer, Reader(ctx, reader))
-	// In order to do the Stat call below, the writer needs to be closed
-	// so that the object is created.
-	closeErr := writer.Close()
-
+	_, copyErr := io.Copy(writer, ContextReader(ctx, src))
+  closeErr := writer.Close()
 	if copyErr != nil {
 		return nil, &swiftError{"copying file", url, copyErr}
 	}
 	if closeErr != nil {
-		return nil, &swiftError{"closing file", url, closeErr}
+		return nil, &swiftError{"closing upload", url, closeErr}
 	}
 
 	return sw.Stat(ctx, url)
@@ -236,27 +202,13 @@ func (sw *Swift) Join(url, path string) (string, error) {
 	return strings.TrimSuffix(url, "/") + "/" + path, nil
 }
 
-// UnsupportedOperations describes which operations (Get, Put, etc) are not
-// supported for the given URL.
-func (sw *Swift) UnsupportedOperations(url string) UnsupportedOperations {
-	u, err := sw.parse(url)
-	if err != nil {
-		return AllUnsupported(err)
-	}
-	_, _, err = sw.conn.Container(u.bucket)
-	if err != nil {
-		return AllUnsupported(&swiftError{"looking for bucket", url, err})
-	}
-	return AllSupported()
-}
-
 func (sw *Swift) parse(rawurl string) (*urlparts, error) {
-	ok := strings.HasPrefix(rawurl, swiftProtocol)
+	ok := strings.HasPrefix(rawurl, SwiftProtocol)
 	if !ok {
 		return nil, &ErrUnsupportedProtocol{"swift"}
 	}
 
-	path := strings.TrimPrefix(rawurl, swiftProtocol)
+	path := strings.TrimPrefix(rawurl, SwiftProtocol)
 	if path == "" {
 		return nil, &ErrInvalidURL{"swift"}
 	}
