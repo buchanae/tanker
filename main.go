@@ -22,13 +22,12 @@ func main() {
 
   err := storage.EnsurePath(conf.Logging.Path)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 
-	// TODO concurrent, multiprocess log
 	logfh, err := os.Create(conf.Logging.Path)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	defer logfh.Close()
 	log.SetOutput(logfh)
@@ -37,12 +36,12 @@ func main() {
   // TODO probably want the git repo root, not the current directory
 	err = storage.EnsureDir(conf.DataDir)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 
   store, err := storage.NewStorage(conf.BaseURL, conf.Storage)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -53,13 +52,13 @@ func main() {
 		msg, err := comms.Input()
 		if err != nil {
       log.Println("input err")
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 
 		err = handle(ctx, msg, comms, store, conf)
 		if err != nil {
       log.Println("handle err")
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 
 		if _, ok := msg.(*TerminateMessage); ok {
@@ -98,29 +97,13 @@ func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage,
     }
     defer src.Close()
 
-		reader := progress.NewReader(src)
-
-    go func() {
-      var total int
-      t := progress.NewTicker(ctx, reader, int64(msg.Size), time.Millisecond * 250)
-      for p := range t {
-
-        inc := int(p.N())
-        total += inc
-
-        log.Println("so far", total)
-        log.Println("since last", inc)
-
-        comms.Send(&ProgressMessage{
-          Event: "progress",
-          Oid: msg.Oid,
-          BytesSoFar: total,
-          BytesSinceLast: inc,
-        })
-      }
-    }()
+    reader := progress.NewReader(src)
+    watchCtx, cancel := context.WithCancel(ctx)
+    defer cancel()
+    go watchProgress(watchCtx, comms, msg.Oid, msg.Size, reader)
 
 		_, err = store.Put(ctx, url, reader)
+    cancel()
 		if err != nil {
 			comms.SendError(msg.Oid, err)
 			// A failed upload should not fail the whole process,
@@ -151,12 +134,20 @@ func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage,
 			return nil
 		}
 
+    log.Println("Downloading", url, abspath)
+
     dest, err := os.Create(abspath)
     if err != nil {
       return fmt.Errorf("opening dest path %q: %s", abspath, dest)
     }
 
-		_, err = store.Get(ctx, url, dest)
+    writer := progress.NewWriter(dest)
+    watchCtx, cancel := context.WithCancel(ctx)
+    defer cancel()
+    go watchProgress(watchCtx, comms, msg.Oid, msg.Size, writer)
+
+		_, err = store.Get(ctx, url, writer)
+    cancel()
     closeErr := dest.Close()
 
 		if err != nil {
@@ -198,4 +189,21 @@ func handlePanic(cb func(error)) {
 			cb(fmt.Errorf("Unknown worker panic: %+v", r))
 		}
 	}
+}
+
+func watchProgress(ctx context.Context, comms *Comms, oid string, size int, c progress.Counter) {
+  var total int
+  t := progress.NewTicker(ctx, c, int64(size), time.Millisecond * 250)
+  for p := range t {
+
+    inc := int(p.N())
+    total += inc
+
+    comms.Send(&ProgressMessage{
+      Event: "progress",
+      Oid: oid,
+      BytesSoFar: total,
+      BytesSinceLast: inc,
+    })
+  }
 }

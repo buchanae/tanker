@@ -86,6 +86,7 @@ func (c *Comms) Initialized() {
 }
 
 func (c *Comms) Send(msg Message) error {
+  log.Println("Sending", msg)
 	err := c.enc.Encode(msg)
 	if err != nil {
 		return fmt.Errorf("sending message: %s")
@@ -112,6 +113,7 @@ func (c *Comms) SendComplete(oid, path string) error {
 	return c.Send(&CompleteMessage{
 		Event: "complete",
 		Oid:   oid,
+    Path: path,
 	})
 }
 
