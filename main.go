@@ -6,8 +6,10 @@ import (
 	"log"
   "time"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+  "strings"
 
   "github.com/buchanae/tanker/storage"
   "github.com/machinebox/progress"
@@ -18,27 +20,47 @@ import (
 // https://github.com/git-lfs/git-lfs/blob/master/docs/custom-transfers.md
 
 func main() {
-	conf := DefaultConfig()
+  repodir, err := findRepoRoot()
+  if err != nil {
+    log.Fatalln(err)
+  }
 
-  err := storage.EnsurePath(conf.Logging.Path)
+  gitdir := filepath.Join(repodir, ".git")
+  tankerdir := filepath.Join(gitdir, "tanker")
+  loggingPath := filepath.Join(tankerdir, "logs")
+  dataDir := filepath.Join(tankerdir, "tmp")
+  confPath := filepath.Join(repodir, ".tanker.yaml")
+
+  // Initialize logging to a file.
+  err = storage.EnsurePath(loggingPath)
 	if err != nil {
 		log.Fatalln(err)
 	}
-
-	logfh, err := os.Create(conf.Logging.Path)
+	logfh, err := os.Create(loggingPath)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	defer logfh.Close()
 	log.SetOutput(logfh)
-	defer log.Println("tanker done")
 
-  // TODO probably want the git repo root, not the current directory
-	err = storage.EnsureDir(conf.DataDir)
+  // Initialize a directory for writing tanker data during download.
+	err = storage.EnsureDir(dataDir)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
+  // Load a tanker config file.
+	conf := DefaultConfig()
+  err = ParseConfigFile(confPath, &conf)
+  if err != nil {
+    log.Fatalln(err)
+  }
+
+  if conf.BaseURL == "" {
+    log.Fatalln("config BaseURL is required")
+  }
+
+  // Get a storage (swift, s3, etc) client.
   store, err := storage.NewStorage(conf.BaseURL, conf.Storage)
 	if err != nil {
 		log.Fatalln(err)
@@ -47,17 +69,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+  // Start processing git-lfs messages
 	comms := DefaultComms()
 	for {
 		msg, err := comms.Input()
 		if err != nil {
-      log.Println("input err")
 			log.Fatalln(err)
 		}
 
-		err = handle(ctx, msg, comms, store, conf)
+		err = handle(ctx, msg, comms, store, conf.BaseURL, dataDir)
 		if err != nil {
-      log.Println("handle err")
 			log.Fatalln(err)
 		}
 
@@ -68,7 +89,13 @@ func main() {
 }
 
 // handle handles a single input message from git-lfs (init, upload, download, etc)
-func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage, conf Config) (err error) {
+func handle(
+  ctx context.Context,
+  m Message,
+  comms *Comms,
+  store storage.Storage,
+  baseURL, dataDir string,
+  ) (err error) {
 
   defer handlePanic(func(e error) {
     err = e
@@ -80,7 +107,7 @@ func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage,
 		return nil
 
 	case *UploadMessage:
-		url, err := store.Join(conf.BaseURL, msg.Oid)
+		url, err := store.Join(baseURL, msg.Oid)
 		if err != nil {
 			comms.SendError(msg.Oid, err)
 			// A failed upload should not fail the whole process,
@@ -97,13 +124,16 @@ func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage,
     }
     defer src.Close()
 
+    // Set up progress monitoring.
     reader := progress.NewReader(src)
     watchCtx, cancel := context.WithCancel(ctx)
     defer cancel()
     go watchProgress(watchCtx, comms, msg.Oid, msg.Size, reader)
 
+    // Start uploading
 		_, err = store.Put(ctx, url, reader)
     cancel()
+
 		if err != nil {
 			comms.SendError(msg.Oid, err)
 			// A failed upload should not fail the whole process,
@@ -119,13 +149,13 @@ func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage,
 		// determine path to download file to.
 		// this usually goes into ".tanker/data".
 		// git-lfs will handle moving the file from here.
-		path := filepath.Join(conf.DataDir, msg.Oid)
+		path := filepath.Join(dataDir, msg.Oid)
 		abspath, err := filepath.Abs(path)
 		if err != nil {
 			return fmt.Errorf("determining download path: %s", err)
 		}
 
-		url, err := store.Join(conf.BaseURL, msg.Oid)
+		url, err := store.Join(baseURL, msg.Oid)
 		if err != nil {
 			comms.SendError(msg.Oid, err)
 			// A failed download should not fail the whole process,
@@ -141,11 +171,13 @@ func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage,
       return fmt.Errorf("opening dest path %q: %s", abspath, dest)
     }
 
+    // Set up progress monitoring
     writer := progress.NewWriter(dest)
     watchCtx, cancel := context.WithCancel(ctx)
     defer cancel()
     go watchProgress(watchCtx, comms, msg.Oid, msg.Size, writer)
 
+    // Start downloading
 		_, err = store.Get(ctx, url, writer)
     cancel()
     closeErr := dest.Close()
@@ -191,6 +223,8 @@ func handlePanic(cb func(error)) {
 	}
 }
 
+// watchProgress watches the progress of a download/upload
+// and emits git-lfs progess messages.
 func watchProgress(ctx context.Context, comms *Comms, oid string, size int, c progress.Counter) {
   var total int
   t := progress.NewTicker(ctx, c, int64(size), time.Millisecond * 250)
@@ -206,4 +240,19 @@ func watchProgress(ctx context.Context, comms *Comms, oid string, size int, c pr
       BytesSinceLast: inc,
     })
   }
+}
+
+// findRepoRoot finds the root of the repo.
+func findRepoRoot() (string, error) {
+  cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+  out, err := cmd.Output()
+  if err != nil {
+    return "", fmt.Errorf("finding .git directory: %s", err)
+  }
+  if len(out) == 0 {
+    return "", fmt.Errorf("finding .git directory: empty output")
+  }
+  path := string(out)
+  path = strings.TrimSpace(path)
+  return path, nil
 }
