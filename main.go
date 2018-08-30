@@ -29,7 +29,7 @@ func main() {
   tankerdir := filepath.Join(gitdir, "tanker")
   loggingPath := filepath.Join(tankerdir, "logs")
   dataDir := filepath.Join(tankerdir, "tmp")
-  confPath := filepath.Join(repodir, ".tanker.yaml")
+  confPath := filepath.Join(tankerdir, "config.yml")
 
   // Initialize logging to a file.
   err = storage.EnsurePath(loggingPath)
