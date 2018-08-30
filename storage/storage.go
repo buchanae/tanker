@@ -2,21 +2,21 @@ package storage
 
 import (
 	"context"
-  "io"
-	"time"
 	"fmt"
-	"strings"
 	"github.com/alecthomas/units"
+	"io"
+	"strings"
+	"time"
 )
 
 type Config struct {
 	GoogleCloud GoogleCloudConfig
-	Swift         SwiftConfig
-	FTP    FTPConfig
+	Swift       SwiftConfig
+	FTP         FTPConfig
 }
 
 func DefaultConfig() Config {
-  return Config{
+	return Config{
 		Swift: SwiftConfig{
 			MaxRetries:     20,
 			ChunkSizeBytes: int64(500 * units.MB),
@@ -26,7 +26,7 @@ func DefaultConfig() Config {
 			User:     "anonymous",
 			Password: "anonymous",
 		},
-  }
+	}
 }
 
 // Storage provides an interface for a storage backend,
@@ -80,40 +80,40 @@ type urlparts struct {
 
 func NewStorage(url string, conf Config) (Storage, error) {
 
-  if strings.HasPrefix(url, GSProtocol) {
-    if !conf.GoogleCloud.Valid() {
-      return nil, fmt.Errorf("failed to configure Google Storage backend")
-    }
-    gs, err := NewGoogleCloud(conf.GoogleCloud)
-    if err != nil {
-      return nil, fmt.Errorf("failed to configure Google Storage backend: %s", err)
-    }
-    return gs, nil
-  }
+	if strings.HasPrefix(url, GSProtocol) {
+		if !conf.GoogleCloud.Valid() {
+			return nil, fmt.Errorf("failed to configure Google Storage backend")
+		}
+		gs, err := NewGoogleCloud(conf.GoogleCloud)
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure Google Storage backend: %s", err)
+		}
+		return gs, nil
+	}
 
-  if strings.HasPrefix(url, SwiftProtocol) {
-    if !conf.Swift.Valid() {
-      return nil, fmt.Errorf("failed to config Swift storage backend")
-    }
-    s, err := NewSwift(conf.Swift)
-    if err != nil {
-      return nil, fmt.Errorf("failed to config Swift storage backend: %s", err)
-    }
-    return s, nil
-  }
+	if strings.HasPrefix(url, SwiftProtocol) {
+		if !conf.Swift.Valid() {
+			return nil, fmt.Errorf("failed to config Swift storage backend")
+		}
+		s, err := NewSwift(conf.Swift)
+		if err != nil {
+			return nil, fmt.Errorf("failed to config Swift storage backend: %s", err)
+		}
+		return s, nil
+	}
 
-  if strings.HasPrefix(url, FTPProtocol) {
-    if !conf.FTP.Valid() {
-      return nil, fmt.Errorf("failed to config ftp storage backend")
-    }
-    ftp, err := NewFTP(conf.FTP)
-    if err != nil {
-      return nil, fmt.Errorf("failed to config ftp storage backend: %s", err)
-    }
-    return ftp, nil
-  }
+	if strings.HasPrefix(url, FTPProtocol) {
+		if !conf.FTP.Valid() {
+			return nil, fmt.Errorf("failed to config ftp storage backend")
+		}
+		ftp, err := NewFTP(conf.FTP)
+		if err != nil {
+			return nil, fmt.Errorf("failed to config ftp storage backend: %s", err)
+		}
+		return ftp, nil
+	}
 
-  return nil, fmt.Errorf("failed to find matching storage backend for %q", url)
+	return nil, fmt.Errorf("failed to find matching storage backend for %q", url)
 }
 
 // Duration is a wrapper type for time.Duration which provides human-friendly

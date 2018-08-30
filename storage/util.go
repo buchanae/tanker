@@ -4,8 +4,8 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
-  "path/filepath"
 )
 
 // Reader wraps an io.Reader with one that checks ctx.Done() on each Read call.

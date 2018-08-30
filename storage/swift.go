@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-  "log"
 	"io"
 	"os"
 	"strings"
@@ -73,7 +72,7 @@ func NewSwift(conf SwiftConfig) (*Swift, error) {
 		return nil, err
 	}
 
-  err = conn.Authenticate()
+	err = conn.Authenticate()
 	if err != nil {
 		return nil, err
 	}
@@ -173,20 +172,17 @@ func (sw *Swift) Put(ctx context.Context, url string, src io.Reader) (*Object, e
 		return nil, err
 	}
 
-  writer, err := sw.conn.StaticLargeObjectCreate(&swift.LargeObjectOpts{
-    Container:  u.bucket,
-    ObjectName: u.path,
-    //CheckHash:  true,
-    //Hash:       hash,
-    ChunkSize:  sw.chunkSize,
-  })
-  log.Println("Create", err)
+	writer, err := sw.conn.StaticLargeObjectCreate(&swift.LargeObjectOpts{
+		Container:  u.bucket,
+		ObjectName: u.path,
+		ChunkSize:  sw.chunkSize,
+	})
 	if err != nil {
 		return nil, &swiftError{"creating object", url, err}
 	}
 
 	_, copyErr := io.Copy(writer, ContextReader(ctx, src))
-  closeErr := writer.Close()
+	closeErr := writer.Close()
 	if copyErr != nil {
 		return nil, &swiftError{"copying file", url, copyErr}
 	}

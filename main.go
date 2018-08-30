@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+  "time"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 
   "github.com/buchanae/tanker/storage"
+  "github.com/machinebox/progress"
 )
 
 // All this is based on git-lfs custom transfer agents.
@@ -96,10 +98,30 @@ func handle(ctx context.Context, m Message, comms *Comms, store storage.Storage,
     }
     defer src.Close()
 
-    log.Println("Put")
-		_, err = store.Put(ctx, url, src)
+		reader := progress.NewReader(src)
+
+    go func() {
+      var total int
+      t := progress.NewTicker(ctx, reader, int64(msg.Size), time.Millisecond * 250)
+      for p := range t {
+
+        inc := int(p.N())
+        total += inc
+
+        log.Println("so far", total)
+        log.Println("since last", inc)
+
+        comms.Send(&ProgressMessage{
+          Event: "progress",
+          Oid: msg.Oid,
+          BytesSoFar: total,
+          BytesSinceLast: inc,
+        })
+      }
+    }()
+
+		_, err = store.Put(ctx, url, reader)
 		if err != nil {
-      log.Println("Upload failed", err)
 			comms.SendError(msg.Oid, err)
 			// A failed upload should not fail the whole process,
 			// so we return nil. The error has been communicated
