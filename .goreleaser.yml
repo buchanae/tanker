@@ -1,0 +1,29 @@
+builds:
+  - binary: tanker
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+    env:
+      - CGO_ENABLED=0
+    ldflags: >
+      -X github.com/buchanae/tanker.BuildDate={{.Date}}
+      -X github.com/buchanae/tanker.GitCommit={{.Commit}}
+      -X github.com/buchanae/tanker.GitBranch={{.Env.GIT_BRANCH}}
+      -X github.com/buchanae/tanker.GitUpstream={{.Env.GIT_UPSTREAM}}
+      -X github.com/buchanae/tanker.Version={{.Version}}
+
+dist: build/release
+
+git:
+  short_hash: true
+
+release:
+  draft: true
+
+env_files:
+  github_token: .github_token
+
+archive:
+  name_template: "{{.ProjectName}}-{{.Os}}-{{.Arch}}-{{.Version}}"

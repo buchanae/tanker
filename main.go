@@ -17,42 +17,63 @@ import (
 // In particular, this is a "standalone transfer agent"
 // https://github.com/git-lfs/git-lfs/blob/master/docs/custom-transfers.md
 
-func main() {
+type Tanker struct {
+  // Holds paths to commonly used files.
+  Paths struct {
+    Repo, Git, Tanker, Logs, Data, Config string
+  }
+  Config Config
+  LogFile *os.File
+}
+
+func (t *Tanker) Close() error {
+  t.LogFile.Close()
+  return nil
+}
+
+func NewTanker() (*Tanker, error) {
   repodir, err := findRepoRoot()
   if err != nil {
-    log.Fatalln(err)
+    return nil, fmt.Errorf("finding git repo root: %s", err)
   }
 
-  gitdir := filepath.Join(repodir, ".git")
-  tankerdir := filepath.Join(gitdir, "tanker")
-  loggingPath := filepath.Join(tankerdir, "logs")
-  dataDir := filepath.Join(tankerdir, "tmp")
-  confPath := filepath.Join(tankerdir, "config.yml")
+  tanker := &Tanker{}
+  tanker.Paths.Repo = repodir
+  tanker.Paths.Git = filepath.Join(tanker.Paths.Repo, ".git")
+  tanker.Paths.Tanker = filepath.Join(tanker.Paths.Git, "tanker")
+  tanker.Paths.Logs = filepath.Join(tanker.Paths.Tanker, "logs")
+  tanker.Paths.Data = filepath.Join(tanker.Paths.Tanker, "data")
+  tanker.Paths.Config = filepath.Join(tanker.Paths.Tanker, "config.yml")
 
   // Initialize logging to a file.
-  err = storage.EnsurePath(loggingPath)
+  err = storage.EnsurePath(tanker.Paths.Logs)
 	if err != nil {
-		log.Fatalln(err)
+    return nil, fmt.Errorf("initializing logging file: %s", err)
 	}
-	logfh, err := os.OpenFile(loggingPath, os.O_APPEND|os.O_WRONLY, 0644)
+	logfh, err := os.OpenFile(tanker.Paths.Logs, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Fatalln(err)
+    return nil, fmt.Errorf("initializing logging file: %s", err)
 	}
-	defer logfh.Close()
+  tanker.LogFile = logfh
 	log.SetOutput(logfh)
 
   // Initialize a directory for writing tanker data during download.
-	err = storage.EnsureDir(dataDir)
+	err = storage.EnsureDir(tanker.Paths.Data)
 	if err != nil {
-		log.Fatalln(err)
+    return nil, fmt.Errorf("initializing data directory: %s", err)
 	}
 
   // Load a tanker config file.
-	conf := DefaultConfig()
-  err = ParseConfigFile(confPath, &conf)
+  tanker.Config = DefaultConfig()
+  err = ParseConfigFile(tanker.Paths.Config, &tanker.Config)
   if err != nil {
-    log.Fatalln(err)
+    return nil, fmt.Errorf("parsing config: %s", err)
   }
+
+  return tanker, nil
+}
+
+func main() {
 
   rootCmd := &cobra.Command{
     Use: "tanker",
@@ -63,8 +84,14 @@ func main() {
     Args: cobra.ExactArgs(1),
     RunE: func(_ *cobra.Command, args []string) error {
 
+      tanker, err := NewTanker()
+      if err != nil {
+        return err
+      }
+      defer tanker.Close()
+
       cmd := exec.Command("git", "config", "lfs.url", "tanker")
-      err := cmd.Run()
+      err = cmd.Run()
       if err != nil {
         return fmt.Errorf("configuring git-lfs: %s", err)
       }
@@ -88,8 +115,8 @@ func main() {
       }
 
       url := args[0]
-      conf.BaseURL = url
-      err = WriteConfigFile(conf, confPath)
+      tanker.Config.BaseURL = url
+      err = WriteConfigFile(tanker.Config, tanker.Paths.Config)
       if err != nil {
         return fmt.Errorf("writing config file: %s", err)
       }
@@ -101,14 +128,28 @@ func main() {
   transferCmd := &cobra.Command{
     Use: "transfer",
     RunE: func(cmd *cobra.Command, args []string) error {
-      return transfer(conf, dataDir)
+
+      tanker, err := NewTanker()
+      if err != nil {
+        return err
+      }
+      defer tanker.Close()
+
+      return transfer(tanker.Config, tanker.Paths.Data)
     },
   }
 
   logsCmd := &cobra.Command{
     Use: "logs",
     RunE: func(cmd *cobra.Command, args []string) error {
-			t, err := tail.TailFile(loggingPath, tail.Config{Follow: true})
+
+      tanker, err := NewTanker()
+      if err != nil {
+        return err
+      }
+      defer tanker.Close()
+
+			t, err := tail.TailFile(tanker.Paths.Logs, tail.Config{Follow: true})
       if err != nil {
         return err
       }
@@ -119,11 +160,19 @@ func main() {
     },
   }
 
+  versionCmd := &cobra.Command{
+    Use: "version",
+    Run: func(cmd *cobra.Command, args []string) {
+      fmt.Println(VersionString())
+    },
+  }
+
   rootCmd.AddCommand(initCmd)
   rootCmd.AddCommand(transferCmd)
   rootCmd.AddCommand(logsCmd)
+  rootCmd.AddCommand(versionCmd)
 
-  err = rootCmd.Execute()
+  err := rootCmd.Execute()
   if err != nil {
     log.Fatalln(err)
   }
