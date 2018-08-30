@@ -136,3 +136,12 @@ func checkForUnknownKeys(jsonStr []byte, obj interface{}) error {
 
 	return nil
 }
+
+// WriteConfigFile writes the configuration to a YAML file.
+func WriteConfigFile(c Config, path string) error {
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(path, b, 0600)
+}
