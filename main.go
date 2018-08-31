@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
   "strings"
+	"syscall"
 
   "github.com/spf13/cobra"
   "github.com/buchanae/tanker/storage"
@@ -174,8 +175,8 @@ func main() {
     },
   }
 
-  pullCmd := &cobra.Command{
-		Use: "pull",
+  includeCmd := &cobra.Command{
+		Use: "include",
 		RunE: func(_ *cobra.Command, args []string) error {
       tanker, err := NewTanker()
       if err != nil {
@@ -187,13 +188,47 @@ func main() {
         return fmt.Errorf("missing file list")
       }
 
-      list := strings.Join(args, ",")
-      cmd := exec.Command("git", "lfs", "pull", "--include", list)
-      cmd.Stdout = os.Stdout
-      cmd.Stderr = os.Stderr
+      cmd := exec.Command("git", "config", "--get", "lfs.fetchinclude")
+      out, err := cmd.Output()
+			code := getExitCode(err)
+			// exit code 1 means the config doesn't exist, which is ok in this case.
+			// so we need special handling for that code here.
+      if code == 1 {
+        err = nil
+      }
+      if err != nil {
+				return fmt.Errorf("getting lfs.fetchinclude config: %s", err)
+			}
+      sout := string(out)
+      sout = strings.TrimSpace(sout)
+
+      uniq := map[string]bool{}
+
+      existingList := strings.Split(sout, ",")
+      for _, key := range existingList {
+        if key != "" {
+          uniq[key] = true
+        }
+      }
+
+      for _, key := range args {
+        if key != "" {
+          uniq[key] = true
+        }
+      }
+
+      var keys []string
+      for key, _ := range uniq {
+        keys = append(keys, key)
+      }
+
+      list := strings.Join(keys, ",")
+      log.Println("LIST", list)
+
+      cmd = exec.Command("git", "config", "lfs.fetchinclude", list)
       err = cmd.Run()
       if err != nil {
-        return err
+        return fmt.Errorf("setting lfs.fetchinclude config: %s", err)
       }
 
       return nil
@@ -231,7 +266,7 @@ func main() {
   rootCmd.AddCommand(initCmd)
   rootCmd.AddCommand(transferCmd)
   rootCmd.AddCommand(logsCmd)
-  rootCmd.AddCommand(pullCmd)
+  rootCmd.AddCommand(includeCmd)
   rootCmd.AddCommand(versionCmd)
   if err := rootCmd.Execute(); err != nil {
     os.Exit(1)
@@ -254,4 +289,23 @@ func findRepoRoot() (string, error) {
   path := string(out)
   path = strings.TrimSpace(path)
   return path, nil
+}
+
+
+func getExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exiterr, ok := err.(*exec.ExitError); ok {
+    // The program has exited with an exit code != 0
+
+    // This works on both Unix and Windows. Although package
+    // syscall is generally platform dependent, WaitStatus is
+    // defined for both Unix and Windows and in both cases has
+    // an ExitStatus() method with the same signature.
+    if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
+      return status.ExitStatus()
+    }
+	}
+	return 128
 }
