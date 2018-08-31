@@ -189,12 +189,15 @@ func handlePanic(cb func(error)) {
 // watchProgress watches the progress of a download/upload
 // and emits git-lfs progess messages.
 func watchProgress(ctx context.Context, comms *Comms, oid string, size int, c progress.Counter) {
-  var total int
+
+  var last int
   t := progress.NewTicker(ctx, c, int64(size), time.Millisecond * 250)
   for p := range t {
 
-    inc := int(p.N())
-    total += inc
+    total := int(p.N())
+    inc := total - last
+    last = total
+    log.Printf("progress inc %d total %d", inc, total)
 
     comms.Send(&ProgressMessage{
       Event: "progress",
