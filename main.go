@@ -174,6 +174,32 @@ func main() {
     },
   }
 
+  pullCmd := &cobra.Command{
+		Use: "pull",
+		RunE: func(_ *cobra.Command, args []string) error {
+      tanker, err := NewTanker()
+      if err != nil {
+        return err
+      }
+      defer tanker.Close()
+
+      if len(args) == 0 {
+        return fmt.Errorf("missing file list")
+      }
+
+      list := strings.Join(args, ",")
+      cmd := exec.Command("git", "lfs", "pull", "--include", list)
+      cmd.Stdout = os.Stdout
+      cmd.Stderr = os.Stderr
+      err = cmd.Run()
+      if err != nil {
+        return err
+      }
+
+      return nil
+		},
+	}
+
   logsCmd := &cobra.Command{
     Use: "logs",
     RunE: func(cmd *cobra.Command, args []string) error {
@@ -205,6 +231,7 @@ func main() {
   rootCmd.AddCommand(initCmd)
   rootCmd.AddCommand(transferCmd)
   rootCmd.AddCommand(logsCmd)
+  rootCmd.AddCommand(pullCmd)
   rootCmd.AddCommand(versionCmd)
   if err := rootCmd.Execute(); err != nil {
     os.Exit(1)
