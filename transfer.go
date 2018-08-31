@@ -197,7 +197,6 @@ func watchProgress(ctx context.Context, comms *Comms, oid string, size int, c pr
     total := int(p.N())
     inc := total - last
     last = total
-    log.Printf("progress inc %d total %d", inc, total)
 
     comms.Send(&ProgressMessage{
       Event: "progress",

@@ -36,7 +36,7 @@ func (t *Tanker) Close() error {
 func NewTanker() (*Tanker, error) {
   repodir, err := findRepoRoot()
   if err != nil {
-		return nil, fmt.Errorf("finding git repo root: %s", err)
+		return nil, err
   }
 
   tanker := &Tanker{}
@@ -91,6 +91,7 @@ func main() {
 
   rootCmd := &cobra.Command{
     Use: "tanker",
+    SilenceUsage: true,
   }
 
   initCmd := &cobra.Command{
@@ -205,10 +206,8 @@ func main() {
   rootCmd.AddCommand(transferCmd)
   rootCmd.AddCommand(logsCmd)
   rootCmd.AddCommand(versionCmd)
-
-  err := rootCmd.Execute()
-  if err != nil {
-    log.Fatalln(err)
+  if err := rootCmd.Execute(); err != nil {
+    os.Exit(1)
   }
 }
 
@@ -217,10 +216,13 @@ func findRepoRoot() (string, error) {
   cmd := exec.Command("git", "rev-parse", "--show-toplevel")
   out, err := cmd.CombinedOutput()
   if err != nil {
+    if strings.HasPrefix(string(out), "fatal: not a git repository") {
+			return "", fmt.Errorf("not in a git repository")
+		}
     return "", fmt.Errorf("%s", out)
   }
   if len(out) == 0 {
-    return "", fmt.Errorf("empty output")
+    return "", fmt.Errorf("finding repo root: empty output")
   }
   path := string(out)
   path = strings.TrimSpace(path)
