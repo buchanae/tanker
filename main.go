@@ -117,7 +117,14 @@ func main() {
       }
       defer tanker.Close()
 
-      cmd := exec.Command("git", "config", "lfs.standalonetransferagent", "tanker")
+      cmd := exec.Command("git", "lfs", "install", "--local")
+      err = cmd.Run()
+      if err != nil {
+        return fmt.Errorf("configuring git-lfs: %s", err)
+      }
+
+
+      cmd = exec.Command("git", "config", "lfs.standalonetransferagent", "tanker")
       err = cmd.Run()
       if err != nil {
         return fmt.Errorf("configuring git-lfs: %s", err)
@@ -135,7 +142,7 @@ func main() {
         return fmt.Errorf("configuring git-lfs: %s", err)
       }
 
-			cmd = exec.Command("git", "config", "-f", ".lfsconfig", "lfs.url", url)
+			cmd = exec.Command("git", "config", "lfs.url", url)
 			err = cmd.Run()
 			if err != nil {
 				return fmt.Errorf("configuring git-lfs: %s", err)
