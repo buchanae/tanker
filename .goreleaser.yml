@@ -8,11 +8,11 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags: >
-      -X github.com/buchanae/tanker.BuildDate={{.Date}}
-      -X github.com/buchanae/tanker.GitCommit={{.Commit}}
-      -X github.com/buchanae/tanker.GitBranch={{.Env.GIT_BRANCH}}
-      -X github.com/buchanae/tanker.GitUpstream={{.Env.GIT_UPSTREAM}}
-      -X github.com/buchanae/tanker.Version={{.Version}}
+      -X main.BuildDate={{.Date}}
+      -X main.GitCommit={{.Commit}}
+      -X main.GitBranch={{.Env.GIT_BRANCH}}
+      -X main.GitUpstream={{.Env.GIT_UPSTREAM}}
+      -X main.Version={{.Version}}
 
 dist: build/release
 
