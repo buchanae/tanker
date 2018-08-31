@@ -223,12 +223,19 @@ func main() {
       }
 
       list := strings.Join(keys, ",")
-      log.Println("LIST", list)
 
       cmd = exec.Command("git", "config", "lfs.fetchinclude", list)
       err = cmd.Run()
       if err != nil {
         return fmt.Errorf("setting lfs.fetchinclude config: %s", err)
+      }
+
+      cmd = exec.Command("git", "lfs", "pull", "--include", strings.Join(args, ","))
+      cmd.Stdout = os.Stdout
+      cmd.Stderr = os.Stderr
+      err = cmd.Run()
+      if err != nil {
+        return err
       }
 
       return nil
