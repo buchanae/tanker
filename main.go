@@ -36,12 +36,7 @@ func (t *Tanker) Close() error {
 func NewTanker() (*Tanker, error) {
   repodir, err := findRepoRoot()
   if err != nil {
-		if strings.HasPrefix(err.Error(), "fatal: not a git repository") {
-			// It's ok if we're not in a git repo, we'll just skip some steps.
-			err = nil
-		} else {
-			return nil, fmt.Errorf("finding git repo root: %s", err)
-		}
+		return nil, fmt.Errorf("finding git repo root: %s", err)
   }
 
   tanker := &Tanker{}
@@ -109,31 +104,12 @@ func main() {
 			}
 
 			if url == "swift://" {
-				return fmt.Errorf("invalid URL: a bucket name is required") 
+				return fmt.Errorf("invalid URL: a bucket name is required")
 			}
 
 			if !strings.HasPrefix(url, "swift://") {
 				return fmt.Errorf("invalid URL: tanker currently only supports swift://")
 			}
-
-			key := fmt.Sprintf("lfs.%s.standalonetransferagent", url)
-      cmd := exec.Command("git", "config", "--global", key, "tanker")
-      err := cmd.Run()
-      if err != nil {
-        return fmt.Errorf("configuring git-lfs: %s", err)
-      }
-
-      cmd = exec.Command("git", "config", "--global", "lfs.customtransfer.tanker.path", "tanker")
-      err = cmd.Run()
-      if err != nil {
-        return fmt.Errorf("configuring git-lfs: %s", err)
-      }
-
-      cmd = exec.Command("git", "config", "--global", "lfs.customtransfer.tanker.args", "transfer")
-      err = cmd.Run()
-      if err != nil {
-        return fmt.Errorf("configuring git-lfs: %s", err)
-      }
 
       tanker, err := NewTanker()
       if err != nil {
@@ -141,21 +117,35 @@ func main() {
       }
       defer tanker.Close()
 
-			// If we're in a git repo, set up the repo.
-			if tanker.Paths.Repo != "" {
+      cmd := exec.Command("git", "config", "lfs.standalonetransferagent", "tanker")
+      err = cmd.Run()
+      if err != nil {
+        return fmt.Errorf("configuring git-lfs: %s", err)
+      }
 
-				cmd := exec.Command("git", "config", "-f", ".lfsconfig", "lfs.url", url)
-				err = cmd.Run()
-				if err != nil {
-					return fmt.Errorf("configuring git-lfs: %s", err)
-				}
+      cmd = exec.Command("git", "config", "lfs.customtransfer.tanker.path", "tanker")
+      err = cmd.Run()
+      if err != nil {
+        return fmt.Errorf("configuring git-lfs: %s", err)
+      }
 
-				// TODO just derive from lfs.url
-				tanker.Config.BaseURL = url
-				err = WriteConfigFile(tanker.Config, tanker.Paths.Config)
-				if err != nil {
-					return fmt.Errorf("writing config file: %s", err)
-				}
+      cmd = exec.Command("git", "config", "lfs.customtransfer.tanker.args", "transfer")
+      err = cmd.Run()
+      if err != nil {
+        return fmt.Errorf("configuring git-lfs: %s", err)
+      }
+
+			cmd = exec.Command("git", "config", "-f", ".lfsconfig", "lfs.url", url)
+			err = cmd.Run()
+			if err != nil {
+				return fmt.Errorf("configuring git-lfs: %s", err)
+			}
+
+			// TODO just derive from lfs.url
+			tanker.Config.BaseURL = url
+			err = WriteConfigFile(tanker.Config, tanker.Paths.Config)
+			if err != nil {
+				return fmt.Errorf("writing config file: %s", err)
 			}
 
       return nil
