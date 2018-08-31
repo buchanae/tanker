@@ -27,3 +27,4 @@ env_files:
 
 archive:
   name_template: "{{.ProjectName}}-{{.Os}}-{{.Arch}}-{{.Version}}"
+  wrap_in_directory: true
