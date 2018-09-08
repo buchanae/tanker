@@ -1,7 +1,9 @@
 package main
 
 import (
+  "crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -270,11 +272,55 @@ func main() {
     },
   }
 
+  clearCmd := &cobra.Command{
+    Use: "clear",
+    Args: cobra.ExactArgs(1),
+    RunE: func(_ *cobra.Command, args []string) error {
+
+      tanker, err := NewTanker()
+      if err != nil {
+        return err
+      }
+      defer tanker.Close()
+
+			path := args[0]
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+
+			hash := sha256.New()
+			_, err = io.Copy(hash, f)
+			if err != nil {
+				return err
+			}
+			hex := fmt.Sprintf("%x", hash.Sum(nil))
+			first2 := hex[:2]
+			next2 := hex[2:4]
+			abspath := filepath.Join(tanker.Paths.Git, "lfs", "objects", first2, next2, hex)
+			e, err := exists(abspath)
+			if err != nil {
+				return err
+			}
+			if e {
+				err := os.Remove(abspath)
+				if err != nil {
+					return err
+				}
+				log.Println("HASH", hex)
+				log.Println("PATH", abspath)
+			}
+
+      return nil
+    },
+  }
+
   rootCmd.AddCommand(initCmd)
   rootCmd.AddCommand(transferCmd)
   rootCmd.AddCommand(logsCmd)
   rootCmd.AddCommand(includeCmd)
   rootCmd.AddCommand(versionCmd)
+  rootCmd.AddCommand(clearCmd)
   if err := rootCmd.Execute(); err != nil {
     os.Exit(1)
   }
